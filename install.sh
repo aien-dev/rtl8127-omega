@@ -29,8 +29,8 @@ set -eu
 
 VERSION=0.1.0
 REPO=aien-dev/rtl8127-omega
-PIN_COMMIT=__PIN_COMMIT__
-PIN_SHA256=__PIN_SHA256__
+PIN_COMMIT=45becc6a90086ce754a256245cff64d6e62a33a7
+PIN_SHA256=81bd506adcb2ef85d2a42f6eb66b05e2f1c372a34ed9bc8b77ee0fe401493267
 ASSET=dist/rtl8127-probe-linux-aarch64
 BASE_URL=${RTL_BASE_URL:-https://raw.githubusercontent.com/$REPO/$PIN_COMMIT}
 SYSFS=${RTL_SYSFS:-/sys}
