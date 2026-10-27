@@ -49,6 +49,62 @@ Every claim here is one of: **OBSERVED** (we ran it and saw it), **SOURCE** (rea
 The driver's register table is SOURCE, with line numbers in the comments of [om/rtl8127/rtl8127.om](om/rtl8127/rtl8127.om). The tests are OBSERVED, on a
 DGX Spark with the pinned Omega compiler.
 
+## How a network driver works (the plain version)
+
+A network card is a small computer on a board. The driver is the program that tells it what to do. In plain steps:
+
+1. **Find the card and check it is the right one.** The driver reads one of the card's settings (a "register", think of it as a labelled mailbox on the card). If it reads all ones, nothing is there. If the model number is not the one we know, we stop. (`rtlinit`)
+2. **Wake it up and reset it.** Cards start in an unknown state, so we tell it to reset and wait until it says it is done. (`rtlpwrup`, `rtlhwrst`)
+3. **Ask it for its own address.** Every card has a unique MAC address (like a street address on the local network). We read it from the card. (`rtlinit`)
+4. **Set up two waiting lines in memory.** One line is for packets we want to send, one for packets that arrive. Each line is a "ring" of 16 slots. Each slot has a small note (a "descriptor") that says "the packet is here, it is this long, you own it / I own it". The card reads and writes memory directly to do this, which is called DMA. We tell the card where the rings live. (`rtlinit`)
+5. **Switch on sending and receiving.** We unlock the card's settings, say which packets to accept, and turn the send and receive parts on. We leave interrupts off, so the driver keeps checking ("polling") instead of waiting for the card to tap it on the shoulder. This is simpler, and slower.
+6. **Send a packet.** Put the packet in a slot, hand the slot to the card, then ring the "doorbell" (write one register). The card sends it and hands the slot back. (`rtltx`, `rtltxrec`)
+7. **Receive a packet.** Look at the next slot in the receive line. If the card has filled it, copy the packet out and give the slot back. (`rtlrx`)
+8. **Report the link.** Ask the card's PHY (the part that talks to the actual cable) whether the cable is connected and how fast: 10, 100, 1000, 2500, 5000 or 10000 Mb/s. (`rtllink`)
+9. **Stop.** Turn sending and receiving off. (`rtlstop`)
+
+The function names are in [om/rtl8127/rtl8127.om](om/rtl8127/rtl8127.om) if you want to follow along.
+
+## Why this could be wrong
+
+Short version: **nobody has ever watched this code work on the real card.** Here is why that matters, and how we will find out.
+
+**1. We copied from a driver, not from a manual.** Realtek publishes no datasheet for this chip. The only source is Realtek's own Linux driver. Every register number, every bit, every wait time came from reading it. If we misread one number, the card does something different from what we think.
+
+**2. Our tests are marked by us.** We built a software pretend-card and ran the driver against it. But we built the pretend-card from the same reading of the same source. If we misunderstood something, we misunderstood it twice, and the tests still pass. Passing tests here mean "the code does what we think the card does", not "the code does what the card does".
+
+**3. The "12 broken copies" test proves less than it sounds.** It shows the tests notice when the code is changed. It does not show the code matches real hardware.
+
+Here are the specific things most likely to be wrong, and how each one would show up on the real card:
+
+| What could be wrong | What we would see | How we find out |
+|---|---|---|
+| A register is at the wrong place | The probe reads nonsense or all ones | Step 1 of the hardware test below |
+| The chip model number bits are different on this revision | Driver says "not my chip" | Step 1 |
+| Reset takes longer than we wait (the vendor driver ignores a timeout, we report it) | Reset error | Step 2 |
+| The PHY (cable side) registers have different addresses | Link never comes up, or wrong speed | Step 2 |
+| A descriptor field is in the wrong order, or wrong byte order | Sent packets never leave, or received ones look scrambled | Step 3 (send one packet, watch from another machine) |
+| We assume the firmware left the card in a usable state | Works on a clean boot, fails after a warm one | Repeat after reboot |
+| A wait for the card to resume from low power is only noted as UNKNOWN in our source | Random failures after idle | Long run |
+| We assume the simple interrupt mode and no MSI-X | Fine while polling, wrong if we ever turn interrupts on | Only matters later |
+| Memory handed to the card must be aligned and inside what the memory-protection hardware (IOMMU) allows | Card writes somewhere else | Step 3 |
+
+### How we will find out, in order
+
+Each step tells us something before we risk the next one. The first two are read-only.
+
+1. `sh install.sh check`. Looks around, changes nothing.
+2. Run the probe on the real card. Expected on the Spark: link up, 10000 Mb/s, MAC `4c:bb:47:2b:b8:7b`. If it exits with code 14, the register map is wrong, and we stop and fix it.
+3. Send one packet, then receive one, then loop them. Not possible in this release (see [docs/GAPS.md](docs/GAPS.md)).
+
+### The big risk, said plainly
+
+On the DGX Spark this card is the **only** working network connection. If a driver for it goes wrong while it owns the card, the machine drops off the network and someone has to walk over and fix it. That is why `takeover` is switched off, why the safety rules exist, and why this release only looks.
+
+### If you try it
+
+Please tell us what the probe printed, even if it is an error. A failed probe is useful: it tells us which part of our reading was wrong. Open an issue on this repo and paste the output. Do not paste anything private; the probe prints only the chip id, the MAC address and the link state.
+
 ## The safety rules (built and tested, for when takeover is switched on)
 
 - It will **not** take a card that carries your default route, and will not take it if you are on ssh and nothing else is up.
