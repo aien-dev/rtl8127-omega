@@ -1,0 +1,339 @@
+note SPDX-License-Identifier: Apache-2.0
+note driver.om: the RTL8127 driver core (rtl8127.om) against the software chip (model.om).
+note Prints one "FAIL id" line per failed check and a final "RTL8127_OMEGA_MODEL: PASS checks=N" or "...: FAIL ...". Exit 0 only on PASS.
+note Ported in spirit from native/net/tests/rtl8127_test.c (aien-dev/aienux PR 450): same chip-model idea, not line for line.
+
+global tt ulong 4
+global pb uchar 32
+text tpass "RTL8127_OMEGA_MODEL: PASS checks="
+text tfail "RTL8127_OMEGA_MODEL: FAIL checks="
+text tfl "FAIL "
+text tfl2 " failures="
+text tnl "\n"
+
+const DMA ulong 296352743424
+
+fn pnum v ulong to void
+b = new uchar 24 0
+n = ulong 24
+x = v
+if eq x 0
+n = sub n 1
+put b n 48
+end
+while ne x 0 bound 20
+n = sub n 1
+put b n uchar add 48 rem x 10
+x = div x 10
+end
+w = write 1 b n sub 24 n
+end
+
+fn chk id ulong c bool to void
+put tt 0 add get tt 0 1
+if not c
+put tt 1 add get tt 1 1
+w = write 1 tfl 0 5
+pnum id
+w = write 1 tnl 0 1
+end
+end
+
+fn fill n ulong seed ulong to void
+for i ulong n
+put fbuf i uchar and add mul seed 31 mul i 7 255
+end
+end
+
+fn up to ulong
+mchip DMA
+ret rtlinit DMA
+end
+
+fn tinit to void
+e = up
+chk 101 eq e 0
+chk 102 eq get rs S_READY 1
+chk 103 eq get rs S_BROKE 0
+chk 104 eq get rs S_MCFG 2
+chk 105 eq get rs S_ICUNK 0
+chk 106 eq get rs add S_MAC0 0 72
+chk 107 and eq get rs add S_MAC0 1 17 eq get rs add S_MAC0 2 34
+chk 108 and eq get rs add S_MAC0 3 51 eq get rs add S_MAC0 4 68
+chk 109 and eq get rs add S_MAC0 5 85 eq get rs S_MACSRC MS_BACK
+chk 110 eq mget MAC0 4 857870664
+chk 111 eq mget MAC4 2 21828
+chk 112 and eq get mc M_MACU 2 eq get mc M_MACL 0
+chk 113 eq and mget CFG9346 1 UNLOCK 0
+chk 114 eq mring TNPDSLO add DMA OFFTXD
+chk 115 eq mring RDSARLO add DMA OFFRXD
+chk 116 eq get mc M_ENBR 0
+chk 117 eq mget TCR 4 TCRVAL
+chk 118 eq mget RCR 4 or or RCRCHIP RCRBCST RCRMYPH
+chk 119 eq mget RMS 2 or RMSVAL RMSVLAN
+chk 120 ne and mget TXNOCLO 1 4 0
+chk 121 eq get mocp div OCPFMT 2 32769
+chk 122 eq mget RSSCTRL 4 0
+chk 123 eq mget QNUMCTL 2 256
+chk 124 eq and mget RXDTYPE 1 2 0
+chk 125 eq and mget RXDVGATE 1 8 0
+chk 126 eq mget IMR0 4 0
+chk 127 eq mget ISR0 4 0
+chk 128 eq and mget INTCFG0 1 97 0
+chk 129 eq mget CHIPCMD 1 or CMDTXEN CMDRXEN
+chk 130 eq and mget MCUCMD 1 MCUOOB 0
+end
+
+fn tinit2 to void
+chk 131 eq get mocp div ulong 49340 2 255
+chk 143 eq get mocp div ulong 49322 2 2000
+chk 132 eq get mocp div ulong 49318 2 437
+chk 144 eq get mocp div ulong 49182 2 21845
+chk 133 eq get mphy div ulong 41984 2 4096
+chk 145 eq get rs S_PHYST 3
+chk 134 eq and mget PMCH 1 192 192
+chk 135 eq get mc M_RSTS 2
+chk 136 eq get rs S_WTO 0
+for i ulong RXN
+d = add OFFRXD mul i 16
+o1 = mrd32 d
+chk 137 and ne and o1 DOWN 0 eq and o1 RXLEN RXBUF
+chk 138 eq ne and o1 DEOR 0 eq i sub RXN 1
+a = or mrd32 add d 8 shl mrd32 add d 12 32
+chk 139 eq a add add DMA OFFRXB mul i STRIDE
+end
+for i ulong TXN
+o1 = mrd32 mul i 32
+chk 140 eq ne and o1 DEOR 0 eq i sub TXN 1
+end
+l = rtllink
+chk 141 and eq l 1 eq get rs S_MBPS 10000
+chk 142 eq get mc M_DMAF 0
+end
+
+fn trefuse to void
+mchip DMA
+put mc M_ABS 1
+chk 201 eq rtlinit DMA E_ABSENT
+chk 202 eq get mc M_WRS 0
+fill 20 1
+chk 203 eq rtltx 20 E_NOTRDY
+mchip DMA
+mput TCR 4 1409286144
+chk 204 eq rtlinit DMA E_CHIP
+chk 205 eq get mc M_WRS 0
+chk 206 and eq rtlstop E_NOTRDY eq get mc M_WRS 0
+mchip DMA
+mput TCR 4 or TCRID 3145728
+chk 207 and eq rtlinit DMA 0 and eq get rs S_ICUNK 1 eq get rs S_MCFG 2
+mchip DMA
+put mc M_RSTK 1
+chk 208 eq rtlinit DMA E_RSTTMO
+chk 209 eq get rs S_READY 0
+mchip DMA
+put mc M_FIFO 1
+mput MCUCMD 1 0
+mput INTRMIT 2 0
+mput LLFIFO 2 0
+chk 210 and eq rtlinit DMA 0 eq get rs S_WTO 6
+mchip DMA
+chk 211 eq rtlinit add DMA 256 E_MEM
+chk 212 eq rtlinit 18446744073709547520 E_MEM
+chk 213 eq get mc M_WRS 0
+end
+
+fn tmac to void
+mchip DMA
+mput BAKADR0 4 0
+mput BAKADR1 2 0
+chk 301 and eq rtlinit DMA 0 eq get rs S_MACSRC MS_MAC0
+chk 302 eq get rs add S_MAC0 0 160
+mchip DMA
+mput BAKADR0 4 255
+for i ulong 6
+put mreg add MAC0 i 255
+end
+chk 303 and eq rtlinit DMA 0 eq get rs S_MACSRC MS_FALL
+chk 304 and ne and get rs add S_MAC0 0 2 0 eq and get rs add S_MAC0 0 1 0
+end
+
+fn ttx to void
+chk 401 eq up 0
+fill 100 7
+chk 402 eq rtltx 100 0
+chk 403 and eq get mc M_TXC 1 eq get mtxl 0 100
+chk 404 eq get mtxf 0 217
+chk 405 eq mget SWTAIL0 4 add get rs S_CLOB 1
+chk 406 eq rtltxpend 1
+chk 407 and eq rtltxrec 0 eq get rs S_RECL 1
+chk 408 eq rtltxpend 0
+fill 20 3
+chk 409 eq rtltx 20 0
+chk 410 eq get mtxl 1 60
+chk 411 eq get mtxf 104 0
+chk 412 eq get mtxf 83 226
+chk 413 eq rtltx 13 E_ARG
+chk 414 eq rtltx 1515 E_ARG
+chk 415 eq rtltx 1514 0
+chk 416 eq get mtxl 2 1514
+w = rtltxrec
+chk 417 eq get mc M_DMAF 0
+mchip DMA
+w = rtlinit DMA
+put mc M_DEFR 1
+ok = ulong 0
+for i ulong TXN
+fill 64 i
+if eq rtltx 64 0
+ok = add ok 1
+end
+end
+chk 418 eq ok 16
+chk 419 eq rtltx 64 E_FULL
+chk 420 and eq rtltxrec 0 eq get rs S_RECL 0
+put mc M_CLO add get mc M_CLO 16
+mput HWCLO0 4 get mc M_CLO
+chk 421 and eq rtltxrec 0 eq get rs S_RECL 16
+chk 422 eq rtltx 64 0
+chk 423 eq get mc M_DMAF 0
+put mc M_DEFR 0
+mchip DMA
+w = rtlinit DMA
+bad = ulong 0
+for i ulong 40
+fill 60 i
+if ne rtltx 60 0
+bad = add bad 1
+end
+w = rtltxrec
+if lt i 64
+if ne ulong get mtxf mul i 64 ulong and mul i 31 255
+bad = add bad 1
+end
+end
+end
+chk 424 eq bad 0
+chk 425 eq get mc M_DMAF 0
+chk 426 eq rtltxpend 0
+mchip DMA
+w = rtlinit DMA
+put mc M_HCLO 1
+fill 60 1
+w = rtltx 60
+chk 427 eq rtltxrec E_DEVICE
+chk 428 eq rtltx 60 E_BROKEN
+chk 429 eq rtlrx E_BROKEN
+end
+
+fn trx to void
+chk 501 eq up 0
+for i ulong 60
+put mrxf i uchar add 100 i
+end
+chk 502 eq mrxin 60 0 0 0
+chk 503 and eq rtlrx 0 eq get rs S_RXLEN 60
+ok = ulong 0
+for i ulong 60
+if eq get obuf i uchar add 100 i
+ok = add ok 1
+end
+end
+chk 504 eq ok 60
+chk 505 and eq rtlrx 0 eq get rs S_RXLEN 0
+bad = ulong 0
+for k ulong 40
+for i ulong 80
+put mrxf i uchar and add k i 255
+end
+if ne mrxin 80 0 0 0
+bad = add bad 1
+end
+w = rtlrx
+if ne get rs S_RXLEN 80
+bad = add bad 1
+end
+if ne get obuf 0 uchar and k 255
+bad = add bad 1
+end
+end
+chk 506 eq bad 0
+chk 507 eq get mc M_DMAF 0
+w = mrxin 10 0 0
+chk 508 and eq rtlrx 0 and eq get rs S_RXLEN 0 eq get rs S_RXDRP 1
+w = mrxin 60 RXRES 0
+chk 509 and eq rtlrx 0 and eq get rs S_RXLEN 0 eq get rs S_RXDRP 2
+chk 510 eq mrxin 60 0 0 0
+chk 511 and eq rtlrx 0 eq get rs S_RXLEN 60
+bad = ulong 0
+for k ulong RXN
+if ne mrxin 60 0 0 0
+bad = add bad 1
+end
+end
+chk 512 eq bad 0
+chk 513 and eq mrxin 60 0 0 2 eq get mc M_RXOV 1
+for k ulong RXN
+w = rtlrx
+end
+chk 514 and eq get rs S_BROKE 0 eq get mc M_DMAF 0
+chk 515 eq mrxin 60 0 5000 0
+chk 516 eq rtlrx E_DEVICE
+chk 517 eq rtlrx E_BROKEN
+end
+
+fn tlink to void
+chk 601 eq up 0
+mput PHYSTAT 2 16386
+chk 602 and eq rtllink 1 eq get rs S_MBPS 10000
+mput PHYSTAT 2 4098
+chk 603 and eq rtllink 1 eq get rs S_MBPS 5000
+mput PHYSTAT 2 1026
+chk 604 and eq rtllink 1 eq get rs S_MBPS 2500
+mput PHYSTAT 2 18
+chk 605 and eq rtllink 1 eq get rs S_MBPS 1000
+mput PHYSTAT 2 10
+chk 606 and eq rtllink 1 eq get rs S_MBPS 100
+mput PHYSTAT 2 6
+chk 607 and eq rtllink 1 eq get rs S_MBPS 10
+mput PHYSTAT 2 2
+chk 608 and eq rtllink 1 eq get rs S_MBPS 0
+mput PHYSTAT 2 16384
+chk 609 and eq rtllink 0 eq get rs S_MBPS 0
+mput PHYSTAT 2 65535
+chk 610 eq rtllink 0
+end
+
+fn tstop to void
+chk 701 eq up 0
+chk 702 eq rtlstop 0
+chk 703 and eq get rs S_READY 0 eq get mc M_RSTS 3
+chk 704 and eq mget IMR0 4 0 eq mget ISR0 4 0
+fill 60 1
+chk 705 eq rtltx 60 E_NOTRDY
+chk 706 eq rtlrx E_NOTRDY
+end
+
+fn main to int
+tinit
+tinit2
+trefuse
+tmac
+ttx
+trx
+tlink
+tstop
+w = long 0
+if eq get tt 1 0
+w = write 1 tpass 0 len tpass
+else
+w = write 1 tfail 0 len tfail
+end
+pnum get tt 0
+w = write 1 tfl2 0 len tfl2
+pnum get tt 1
+w = write 1 tnl 0 1
+if ne get tt 1 0
+exit int 1
+end
+ret 0
+end

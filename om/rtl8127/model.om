@@ -1,0 +1,375 @@
+note SPDX-License-Identifier: Apache-2.0
+note model.om: a software RTL8127 for the tests. Backend unit for rtl8127.om: rtlrd, rtlwr, rtldly, rtlbar.
+note
+note It is a register array with the side effects the vendor driver relies on (reset bit that clears, MAC and PHY OCP windows,
+note FIFO-empty bits, the TX close pointer) and a ring simulator that walks the driver's TX and RX descriptors the way the chip
+note would. It refuses any DMA address outside the driver's region: that is the IOMMU window on a real machine, and every such
+note access is counted in mc[M_DMAF].
+note It is written from the same vendor source as the driver (no datasheet exists). It checks that the driver does what the
+note reference does, NOT that the reference is right for the chip.
+
+const M_ABS ulong 0
+const M_RSTK ulong 1
+const M_FIFO ulong 2
+const M_CLOB ulong 3
+const M_HCLO ulong 4
+const M_DEFR ulong 5
+const M_OCPL ulong 6
+const M_PHYL ulong 7
+const M_PHYB ulong 8
+const M_TXHW ulong 9
+const M_RXHW ulong 10
+const M_CLO ulong 11
+const M_TAIL ulong 12
+const M_TXOR ulong 13
+const M_RSTS ulong 14
+const M_WRS ulong 15
+const M_MACU ulong 16
+const M_MACL ulong 17
+const M_ENBR ulong 18
+const M_TNP ulong 19
+const M_RDS ulong 20
+const M_DMAF ulong 21
+const M_TXC ulong 22
+const M_RXOV ulong 23
+const M_OCPW ulong 24
+const M_DMAB ulong 25
+const M_WROC ulong 26
+const NOADDR ulong 18446744073709551615
+
+global mreg uchar 20480
+global mocp ulong 32768
+global mphy ulong 32768
+global mc ulong 40
+global mtxl ulong 64
+global mtxf uchar 4096
+global mrxf uchar 2048
+
+fn mget o ulong w ulong to ulong
+v = ulong 0
+for i ulong w
+v = or v shl ulong get mreg add o i mul i 8
+end
+ret v
+end
+fn mput o ulong w ulong v ulong to void
+for i ulong w
+put mreg add o i uchar and shr v mul i 8 255
+end
+end
+fn mbump x ulong to void
+put mc x add get mc x 1
+end
+
+note DMA address a, n bytes: the offset inside rdma, or NOADDR (and a fault counted) when it leaves the window.
+fn mdmao a ulong n ulong to ulong
+b = get mc M_DMAB
+if lt a b
+mbump M_DMAF
+ret NOADDR
+end
+if gt add sub a b n MEMSIZE
+mbump M_DMAF
+ret NOADDR
+end
+ret sub a b
+end
+fn mrd32 o ulong to ulong
+a = ulong get rdma o
+b = ulong get rdma add o 1
+c = ulong get rdma add o 2
+d = ulong get rdma add o 3
+ret or or or a shl b 8 shl c 16 shl d 24
+end
+fn mwr32 o ulong v ulong to void
+put rdma o uchar and v 255
+put rdma add o 1 uchar and shr v 8 255
+put rdma add o 2 uchar and shr v 16 255
+put rdma add o 3 uchar and shr v 24 255
+end
+fn mring lo ulong to ulong
+ret or mget lo 4 shl mget add lo 4 4 32
+end
+
+fn rtldly us ulong to void
+end
+fn rtlbar to void
+end
+
+fn mresetst to void
+put mc M_RXHW 0
+put mc M_TXHW get mc M_CLOB
+put mc M_TXOR get mc M_CLOB
+put mc M_CLO get mc M_CLOB
+put mc M_TAIL 0
+mput HWCLO0 4 get mc M_CLOB
+mbump M_RSTS
+end
+
+note Record the sent frame: length and its first 64 bytes, for the first 64 frames.
+fn mcap sz ulong bo ulong to void
+tc = get mc M_TXC
+if lt tc 64
+put mtxl tc sz
+for k ulong 64
+if lt k sz
+put mtxf add mul tc 64 k get rdma add bo k
+end
+end
+end
+put mc M_TXC add tc 1
+end
+
+note EOR must be set on exactly the last TX slot; a wrong EOR counts as a loud DMA fault.
+fn meor o1 ulong slot ulong to void
+last = ulong 0
+if eq slot sub TXN 1
+last = 1
+end
+eor = ulong 0
+if ne and o1 DOWN 0
+eor = 0
+end
+if ne and o1 DEOR 0
+eor = 1
+end
+if ne eor last
+put mc M_DMAF add get mc M_DMAF 1000
+end
+end
+
+note The chip fetches one descriptor at its index. 1 when it did, 0 when it must stop.
+fn mtxone ro ulong to ulong
+slot = rem and sub get mc M_TXHW get mc M_TXOR CLOMASK TXN
+d = add ro mul slot 32
+o1 = mrd32 d
+if eq and o1 DOWN 0
+ret 0
+end
+a = or mrd32 add d 8 shl mrd32 add d 12 32
+sz = and o1 262143
+bo = mdmao a sz
+if eq bo NOADDR
+ret 0
+end
+mcap sz bo
+meor o1 slot
+put mc M_TXHW and add get mc M_TXHW 1 CLOMASK
+if eq get mc M_DEFR 0
+put mc M_CLO add get mc M_CLO 1
+end
+ret 1
+end
+
+fn mtxrun to void
+ro = mdmao mring TNPDSLO mul TXN 32
+if eq ro NOADDR
+ret
+end
+if eq and mget CHIPCMD 1 CMDTXEN 0
+ret
+end
+if gt and sub get mc M_TAIL get mc M_TXHW CLOMASK TXN
+put mc M_DMAF add get mc M_DMAF 1000
+ret
+end
+while ne get mc M_TXHW and get mc M_TAIL CLOMASK bound 64
+if eq mtxone ro 0
+break
+end
+end
+mput HWCLO0 4 and get mc M_CLO CLOMASK
+end
+
+fn rtlrd off ulong w ulong to ulong
+if ne get mc M_ABS 0
+if eq w 4
+ret 4294967295
+end
+if eq w 2
+ret 65535
+end
+ret 255
+end
+if gt add off w MMIOMIN
+put mc M_DMAF add get mc M_DMAF 10000
+ret 0
+end
+if eq off CHIPCMD
+if ne and ulong get mreg off CMDRST 0
+if eq get mc M_RSTK 0
+put mreg off uchar and ulong get mreg off not CMDRST
+mresetst
+end
+end
+end
+if eq off MACOCP
+if eq w 4
+ret get mocp and shr get mc M_OCPL 16 32767
+end
+end
+if eq off PHYOCP
+if eq w 4
+ph = get mc M_PHYB
+if eq ph 1
+put mc M_PHYB 0
+ret 0
+end
+if eq ph 2
+pa = and shr get mc M_PHYL 16 32767
+pv = get mphy pa
+if eq pa 21008
+pv = 1
+if ne and get mphy 20992 4096 0
+pv = 3
+end
+end
+ret or OCPFLAG pv
+end
+ret 0
+end
+end
+if eq off HWCLO0
+if ne get mc M_HCLO 0
+ret add get mc M_CLO 1000
+end
+end
+ret mget off w
+end
+
+fn rtlwr off ulong w ulong v ulong to void
+mbump M_WRS
+if ne get mc M_ABS 0
+ret
+end
+if gt add off w MMIOMIN
+put mc M_DMAF add get mc M_DMAF 10000
+ret
+end
+if eq off MACOCP
+put mc M_OCPL v
+if ne and v OCPWRB 0
+put mocp and shr v 16 32767 and v 65535
+mbump M_OCPW
+end
+ret
+end
+if eq off PHYOCP
+put mc M_PHYL v
+if ne and v OCPWRB 0
+put mphy and shr v 16 32767 and v 65535
+put mc M_PHYB 1
+else
+put mc M_PHYB 2
+end
+ret
+end
+if or eq off MAC0 eq off MAC4
+if eq w 4
+if eq and mget CFG9346 1 UNLOCK UNLOCK
+mbump M_MACU
+else
+mbump M_MACL
+end
+end
+end
+if eq off TNPDSLO
+put mc M_TNP 1
+end
+if eq off RDSARLO
+put mc M_RDS 1
+end
+if eq off SWTAIL0
+mput off w v
+put mc M_TAIL v
+mtxrun
+ret
+end
+if eq off CHIPCMD
+if eq and v or CMDTXEN CMDRXEN or CMDTXEN CMDRXEN
+if or eq get mc M_TNP 0 eq get mc M_RDS 0
+put mc M_ENBR 1
+end
+end
+end
+if eq off ISR0
+mput off w and mget off w not v
+ret
+end
+mput off w v
+end
+
+note The chip receives a frame from the wire: n bytes from mrxf, then a 4 byte FCS. extra is OR-ed into the status word; force, when
+note nonzero, replaces the length field. Returns 0, or 1 chip not receiving, 2 no free descriptor (overflow counted), 3 bad buffer
+note address, 4 frame does not fit the posted buffer.
+fn mrxin n ulong extra ulong force ulong to ulong
+ro = mdmao mring RDSARLO mul RXN 16
+if eq ro NOADDR
+ret 1
+end
+if eq and mget CHIPCMD 1 CMDRXEN 0
+ret 1
+end
+d = add ro mul rem get mc M_RXHW RXN 16
+o1 = mrd32 d
+if eq and o1 DOWN 0
+mbump M_RXOV
+ret 2
+end
+size = and o1 RXLEN
+a = or mrd32 add d 8 shl mrd32 add d 12 32
+bo = mdmao a size
+if eq bo NOADDR
+ret 3
+end
+if gt add n 4 size
+ret 4
+end
+for k ulong n
+put rdma add bo k get mrxf k
+end
+for k ulong 4
+put rdma add add bo n k 204
+end
+l = add n 4
+if ne force 0
+l = force
+end
+mwr32 d or or or DFS DLS extra l
+put mc M_RXHW add get mc M_RXHW 1
+ret 0
+end
+
+note A freshly powered chip. dma is the bus address the driver will be given for rdma.
+fn mchip dma ulong to void
+for i ulong 40
+put mc i 0
+end
+for i ulong 20480
+put mreg i 0
+end
+for i ulong 32768
+put mocp i 0
+put mphy i 0
+end
+for i ulong MEMSIZE
+put rdma i 0
+end
+put mc M_DMAB dma
+mput TCR 4 or TCRID 1048576
+mput LLFIFO 2 512
+put mreg MCUCMD uchar or ulong get mreg MCUCMD or or MCUTXE MCURXE MCUOOB
+mput INTRMIT 2 259
+mput RXDTYPE 1 2
+mput RSSCTRL 4 3841
+mput QNUMCTL 2 264
+put mocp div OCPFMT 2 32770
+mput PHYSTAT 2 or or 16384 PHYSLNK PHYSFD
+mput ISR0 4 133
+mput IMR0 4 4294967295
+mput BAKADR0 4 857870664
+mput BAKADR1 2 21828
+for i ulong 6
+put mreg add MAC0 i uchar add 160 i
+end
+end

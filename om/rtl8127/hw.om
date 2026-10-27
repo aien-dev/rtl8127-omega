@@ -1,0 +1,29 @@
+note SPDX-License-Identifier: Apache-2.0
+note hw.om: READ-ONLY hardware backend for rtl8127.om (rtlrd, rtlwr, rtldly, rtlbar), for the probe tool.
+note
+note It reads the chip through a read-only map of PCI BAR 2 (sysfs resource2). Omega's mapget reads aligned 32-bit words only, so a byte
+note or 16-bit register is read as its 32-bit word and shifted. rtlwr exits 90: nothing here may write to a real chip. A driver that
+note writes needs two things Omega does not have at the pinned compiler yet; see docs/GAPS.md.
+note Handle of the BAR mapping: hm[0].
+global hm long 2
+
+fn rtlrd off ulong w ulong to ulong
+base = and off not ulong 3
+v = mapget get hm 0 base 4
+sh = mul sub off base 8
+if eq w 4
+ret v
+end
+if eq w 2
+ret and shr v sh 65535
+end
+ret and shr v sh 255
+end
+fn rtlwr off ulong w ulong v ulong to void
+exit int 90
+end
+fn rtldly us ulong to void
+d = sleepns long mul us 1000
+end
+fn rtlbar to void
+end

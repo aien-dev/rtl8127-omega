@@ -1,0 +1,103 @@
+note SPDX-License-Identifier: Apache-2.0
+note probe.om: rtl8127-probe, a READ-ONLY look at a Realtek RTL8127 (PCI 10ec:8127). It writes nothing to the chip.
+note Usage: rtl8127-probe /sys/bus/pci/devices/<address>/resource2      (needs root to read the BAR)
+note Prints the chip id, the MAC address the chip holds, and the link state. Exit codes: 0 read fine, 10 usage, 11 cannot open, 12 cannot map,
+note 13 nothing behind the BAR (all ones), 14 not an RTL8127.
+note Built together with rtl8127.om (constants only are used) and hw.om.
+
+text tid "rtl8127-probe: TxConfig 0x"
+text tmac "rtl8127-probe: MAC (backup) "
+text tmac0 "rtl8127-probe: MAC (current) "
+text tlup "rtl8127-probe: link up, Mb/s "
+text tldn "rtl8127-probe: link down\n"
+text tro "rtl8127-probe: read-only, nothing was written to the chip\n"
+text tusg "usage: rtl8127-probe /sys/bus/pci/devices/<address>/resource2\n"
+text tbad "rtl8127-probe: this is not an RTL8127\n"
+text tabs "rtl8127-probe: nothing answers behind the BAR (all ones)\n"
+text tnl "\n"
+text tcol ":"
+
+fn pch c ulong to void
+b = new uchar 1 0
+put b 0 uchar c
+w = write 1 b 0 1
+end
+fn phex v ulong digits ulong to void
+i = digits
+while gt i 0 bound 16
+i = sub i 1
+n = and shr v mul i 4 15
+if gt n 9
+pch add n 87
+else
+pch add n 48
+end
+end
+end
+fn pdec v ulong to void
+if ge v 10
+pdec div v 10
+end
+pch add 48 rem v 10
+end
+fn pmac lo ulong hi ulong to void
+for i ulong 6
+x = ulong 0
+if lt i 4
+x = and shr lo mul i 8 255
+else
+x = and shr hi mul sub i 4 8 255
+end
+phex x 2
+if lt i 5
+w = write 1 tcol 0 1
+end
+end
+w = write 1 tnl 0 1
+end
+
+fn main to int
+if lt argcnt 2
+w = write 2 tusg 0 len tusg
+exit int 10
+end
+pth = new uchar 256 0
+n = argread 1 pth 0 255
+if lt n 1
+exit int 10
+end
+fd = fopen pth 0 ulong n 0 0
+if lt fd 0
+exit int 11
+end
+h = mapnew int fd 0 MMIOMIN 1 1
+if lt h 0
+exit int 12
+end
+put hm 0 h
+tcr = rtlr32 TCR
+if eq tcr 4294967295
+w = write 2 tabs 0 len tabs
+exit int 13
+end
+if ne and tcr TCRIDM TCRID
+w = write 2 tbad 0 len tbad
+exit int 14
+end
+w = write 1 tid 0 len tid
+phex tcr 8
+w = write 1 tnl 0 1
+w = write 1 tmac 0 len tmac
+pmac rtlr32 BAKADR0 rtlr16 BAKADR1
+w = write 1 tmac0 0 len tmac0
+pmac rtlr32 MAC0 rtlr16 MAC4
+if eq rtllink 1
+w = write 1 tlup 0 len tlup
+pdec get rs S_MBPS
+w = write 1 tnl 0 1
+else
+w = write 1 tldn 0 len tldn
+end
+w = write 1 tro 0 len tro
+ret 0
+end

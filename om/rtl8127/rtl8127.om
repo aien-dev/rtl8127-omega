@@ -1,0 +1,703 @@
+note SPDX-License-Identifier: Apache-2.0
+note rtl8127.om: Realtek RTL8127 10 GbE (PCI 10ec:8127) driver core in Omega. Polled, no interrupts, one TX and one RX ring.
+note
+note EXPERIMENTAL. Never run on a real chip. Realtek publishes no register document for this chip; every offset, bit and
+note sequence below comes from Realtek's own Linux driver r8127 v11.014.00 (github.com/openwrt/rtl8127 ec2f285, r8127_n.c
+note and r8127.h, line numbers in the notes). It is a port of the C driver core in aien-dev/aienux PR 450 (native/net/aienos_rtl8127.c).
+note
+note Program-mode companion unit (it owns globals). Build it together with ONE backend unit that defines
+note   rtlrd off w          read width 1, 2 or 4 bytes at register offset off (BAR 2)
+note   rtlwr off w v        write
+note   rtldly us            wait about us microseconds
+note   rtlbar               full memory barrier
+note (model.om for the tests, hw.om for a real chip) and one main. Every register read and write goes through those four.
+note Everything the chip may DMA to or from is the one region rdma (rings at 0 and 1024, TX buffers from 4096, RX buffers from 36864).
+note The chip must see rdma at bus address dma, 4096-aligned. Omega traps (exit 103) on any index outside an array.
+const MAC0 ulong 0
+const MAC4 ulong 4
+const TNPDSLO ulong 32
+const TNPDSHI ulong 36
+const INTCFG0 ulong 52
+const CHIPCMD ulong 55
+const IMR0 ulong 56
+const ISR0 ulong 60
+const TCR ulong 64
+const RCR ulong 68
+const CFG9346 ulong 80
+const TIMINT0 ulong 88
+const TIMINT1 ulong 92
+const PHYSTAT ulong 108
+const PMCH ulong 111
+const TIMINT2 ulong 140
+const MACOCP ulong 176
+const PHYOCP ulong 184
+const LLFIFO ulong 210
+const MCUCMD ulong 211
+const RXDTYPE ulong 216
+const RMS ulong 218
+const INTRMIT ulong 226
+const RDSARLO ulong 228
+const RDSARHI ulong 232
+const RXDVGATE ulong 242
+const TIMINT3 ulong 244
+const SWTAIL0 ulong 3376
+const HWCLO0 ulong 3380
+const BAKADR0 ulong 6624
+const BAKADR1 ulong 6628
+const TXNOCLO ulong 8420
+const RSSCTRL ulong 17664
+const QNUMCTL ulong 18432
+const OCPFMT ulong 60248
+const MMIOMIN ulong 20480
+const CMDSTOP ulong 128
+const CMDRST ulong 16
+const CMDRXEN ulong 8
+const CMDTXEN ulong 4
+const UNLOCK ulong 192
+const RCRMASK ulong 63
+const RCRBCST ulong 8
+const RCRMYPH ulong 2
+const RCRCHIP ulong 1088425216
+const RCRRST ulong 1280
+const TCRVAL ulong 50333504
+const TCRIDM ulong 2088763392
+const TCRID ulong 1820327936
+const TCRICM ulong 7340032
+const MCUOOB ulong 128
+const MCUTXE ulong 32
+const MCURXE ulong 16
+const OCPWRB ulong 2147483648
+const OCPFLAG ulong 2147483648
+const PHYSLNK ulong 2
+const PHYSFD ulong 1
+const RMSVLAN ulong 32768
+const DOWN ulong 2147483648
+const DEOR ulong 1073741824
+const DFS ulong 536870912
+const DLS ulong 268435456
+const RXRES ulong 2097152
+const RXLEN ulong 16383
+const CLOMASK ulong 2147483647
+const TXN ulong 16
+const RXN ulong 16
+const FMIN ulong 60
+const FMAX ulong 1514
+const RXBUF ulong 1536
+const RMSVAL ulong 1522
+const STRIDE ulong 2048
+const OFFTXD ulong 0
+const OFFRXD ulong 1024
+const OFFTXB ulong 4096
+const OFFRXB ulong 36864
+const MEMSIZE ulong 69632
+
+note State cells (global rs). One device per program.
+const S_READY ulong 0
+const S_BROKE ulong 1
+const S_MCFG ulong 2
+const S_ICUNK ulong 3
+const S_MACSRC ulong 4
+const S_UPSRES ulong 5
+const S_PHYST ulong 6
+const S_TCRID ulong 7
+const S_WTO ulong 8
+const S_TXCUR ulong 9
+const S_TXDIR ulong 10
+const S_CLOB ulong 11
+const S_RXCUR ulong 12
+const S_RXDRP ulong 13
+const S_DMA ulong 14
+const S_MAC0 ulong 15
+const S_RXLEN ulong 21
+const S_RECL ulong 22
+const S_MBPS ulong 23
+
+note Error codes returned by rtlinit, rtltx, rtltxrec, rtlrx, rtlstop.
+const E_ARG ulong 1
+const E_MEM ulong 2
+const E_ABSENT ulong 3
+const E_CHIP ulong 4
+const E_RSTTMO ulong 5
+const E_FULL ulong 6
+const E_DEVICE ulong 7
+const E_BROKEN ulong 8
+const E_NOTRDY ulong 9
+
+note MAC address sources, rs[S_MACSRC].
+const MS_BACK ulong 1
+const MS_MAC0 ulong 2
+const MS_FALL ulong 3
+
+note rs: driver state. rdma: the one DMA region (rings and packet buffers). fbuf: frame to send.
+note obuf: frame received.
+global rs ulong 32
+global rdma uchar 69632
+global fbuf uchar 2048
+global obuf uchar 2048
+
+note ---- register access: width 1, 2 or 4, through the backend (rtlrd, rtlwr, rtldly, rtlbar) ----
+fn rtlr8 o ulong to ulong
+ret rtlrd o 1
+end
+fn rtlr16 o ulong to ulong
+ret rtlrd o 2
+end
+fn rtlr32 o ulong to ulong
+ret rtlrd o 4
+end
+fn rtlw8 o ulong v ulong to void
+rtlwr o 1 and v 255
+end
+fn rtlw16 o ulong v ulong to void
+rtlwr o 2 and v 65535
+end
+fn rtlw32 o ulong v ulong to void
+rtlwr o 4 and v 4294967295
+end
+
+fn rtlwto to void
+put rs S_WTO add get rs S_WTO 1
+end
+
+note ---- little-endian 32 bit words in the DMA region ----
+fn dld32 o ulong to ulong
+a = ulong get rdma o
+b = ulong get rdma add o 1
+c = ulong get rdma add o 2
+d = ulong get rdma add o 3
+ret or or or a shl b 8 shl c 16 shl d 24
+end
+fn dst32 o ulong v ulong to void
+put rdma o uchar and v 255
+put rdma add o 1 uchar and shr v 8 255
+put rdma add o 2 uchar and shr v 16 255
+put rdma add o 3 uchar and shr v 24 255
+end
+
+note ---- MAC OCP window, r8127_n.c:3287-3314 ----
+fn rtlocrd a ulong to ulong
+rtlw32 MACOCP shl div a 2 16
+r = rtlr32 MACOCP
+ret and r 65535
+end
+fn rtlocwr a ulong v ulong to void
+rtlw32 MACOCP or or shl div a 2 16 and v 65535 OCPWRB
+end
+
+note ---- PHY OCP window, r8127_n.c:3057-3073 (write waits for the flag to clear) and 3155-3167 (read waits for it to set) ----
+fn rtlphwr a ulong v ulong to void
+rtlw32 PHYOCP or or shl div a 2 16 and v 65535 OCPWRB
+i = ulong 0
+while lt i 20000 bound 20000
+rtldly 1
+f = rtlr32 PHYOCP
+if eq and f OCPFLAG 0
+ret
+end
+i = add i 1
+end
+rtlwto
+end
+fn rtlphrd a ulong to ulong
+rtlw32 PHYOCP shl div a 2 16
+i = ulong 0
+while lt i 20000 bound 20000
+rtldly 1
+f = rtlr32 PHYOCP
+if ne and f OCPFLAG 0
+v = rtlr32 PHYOCP
+ret and v 65535
+end
+i = add i 1
+end
+rtlwto
+ret 65535
+end
+
+note r8127_n.c:4872-4882
+fn rtlwaitll to void
+i = ulong 0
+while lt i 10 bound 10
+rtldly 100
+v = rtlr16 LLFIFO
+if ne and v 512 0
+ret
+end
+i = add i 1
+end
+rtlwto
+end
+
+note r8127_n.c:4287-4293
+fn rtlrxoff to void
+v = rtlr32 RCR
+rtlw32 RCR and v not RCRMASK
+end
+
+note r8127_n.c:4296-4321: gate RX, stop request, wait for both FIFOs and the mitigation idle bits, clear the stop request, soft reset, reset RCR.
+note The vendor ignores a reset that never completes; this driver fails with E_RSTTMO instead.
+fn rtlnicrst to ulong
+rtlrxoff
+v = rtlr8 RXDVGATE
+rtlw8 RXDVGATE or v 8
+v = rtlr8 CHIPCMD
+rtlw8 CHIPCMD or v CMDSTOP
+rtldly 200
+i = ulong 0
+while lt i 3000 bound 3000
+rtldly 50
+v = rtlr8 MCUCMD
+w = or MCUTXE MCURXE
+if eq and v w w
+break
+end
+i = add i 1
+end
+if eq i 3000
+rtlwto
+end
+i = ulong 0
+while lt i 3000 bound 3000
+rtldly 50
+v = rtlr16 INTRMIT
+if eq and v 259 259
+break
+end
+i = add i 1
+end
+if eq i 3000
+rtlwto
+end
+v = rtlr8 CHIPCMD
+rtlw8 CHIPCMD and v or CMDTXEN CMDRXEN
+rtlw8 CHIPCMD CMDRST
+i = ulong 0
+while lt i 100 bound 100
+rtldly 100
+v = rtlr8 CHIPCMD
+if eq and v CMDRST 0
+break
+end
+i = add i 1
+end
+if eq i 100
+ret E_RSTTMO
+end
+rtlw32 RCR RCRRST
+ret 0
+end
+
+note r8127_n.c:4507-4519 with interrupt version 1 (no MSI-X).
+fn rtlhwrst to ulong
+v = rtlr8 INTCFG0
+rtlw8 INTCFG0 and v not ulong 97
+rtlw32 IMR0 0
+v = rtlr32 ISR0
+rtlw32 ISR0 v
+rtlw32 TIMINT0 0
+rtlw32 TIMINT1 0
+rtlw32 TIMINT2 0
+rtlw32 TIMINT3 0
+ret rtlnicrst
+end
+
+note r8127_n.c:7340-7384 without DASH and RealWoW. The UPS-resume PHY wait is not done, only recorded (UNKNOWN on the chip).
+fn rtlexoob to ulong
+rtlrxoff
+rtlocwr 49340 255
+e = rtlnicrst
+if ne e 0
+ret e
+end
+v = rtlr8 MCUCMD
+rtlw8 MCUCMD and v not MCUOOB
+v = rtlocrd 59614
+rtlocwr 59614 and v not ulong 16384
+rtlwaitll
+rtlocwr 49322 2000
+rtlocwr 49318 437
+rtlocwr 49182 21845
+rtlwaitll
+v = rtlocrd 54316
+if ne and v 256 0
+put rs S_UPSRES 1
+else
+put rs S_UPSRES 0
+end
+ret 0
+end
+
+note r8127_n.c:5512-5519 and 13306-13318: PLL on, PHY out of power-down with autonegotiation, unless the board holds the PHY in disable mode (4029-4072).
+note PHY OCP 0xA400 (41984) is BMCR, 0xA420 (42016) holds the PHY state in its low 3 bits (3 = up), MAC OCP 0xDC04 (56324) bit 13 is the disable-mode flag.
+fn rtlpwrup to void
+v = rtlr8 PMCH
+rtlw8 PMCH or v 192
+g = rtlr8 RXDVGATE
+d = rtlocrd 56324
+if ne and g 32 0
+if eq and d 8192 0
+ret
+end
+end
+rtlphwr 41984 4096
+i = ulong 0
+while lt i 100 bound 100
+s = rtlphrd 42016
+s = and s 7
+put rs S_PHYST s
+if eq s 3
+ret
+end
+rtldly 1000
+i = add i 1
+end
+rtlwto
+end
+
+note 1 when the six bytes are a usable unicast address.
+fn rtlmacok m view uchar 6 to ulong
+if ne and ulong get m 0 1 0
+ret 0
+end
+z = ulong 0
+for i ulong 6
+z = or z ulong get m i
+end
+if eq z 0
+ret 0
+end
+ret 1
+end
+
+note r8127_n.c:12418-12441 and 12482-12500 (rar_set): backup address, else MAC0, else a locally administered fallback.
+fn rtlrdmac to void
+m = new uchar 6 0
+lo = rtlr32 BAKADR0
+hi = rtlr16 BAKADR1
+for i ulong 4
+put m i uchar and shr lo mul i 8 255
+end
+put m 4 uchar and hi 255
+put m 5 uchar and shr hi 8 255
+src = MS_BACK
+if eq rtlmacok m 0
+for i ulong 6
+put m i uchar rtlr8 add MAC0 i
+end
+src = MS_MAC0
+end
+if eq rtlmacok m 0
+put m 0 2
+put m 1 65
+put m 2 73
+put m 3 69
+put m 4 78
+put m 5 88
+src = MS_FALL
+end
+put rs S_MACSRC src
+for i ulong 6
+put rs add S_MAC0 i ulong get m i
+end
+v = rtlr8 CFG9346
+rtlw8 CFG9346 or v UNLOCK
+a = or or ulong get m 0 shl ulong get m 1 8 shl ulong get m 2 16
+rtlw32 MAC0 or a shl ulong get m 3 24
+b = or ulong get m 4 shl ulong get m 5 8
+rtlw32 MAC4 b
+v = rtlr8 CFG9346
+rtlw8 CFG9346 and v not UNLOCK
+end
+
+note ---- descriptors: little-endian words in rdma, opts1 written last ----
+fn rtlrxpost i ulong to void
+a = add add get rs S_DMA OFFRXB mul i STRIDE
+d = add OFFRXD mul i 16
+dst32 add d 4 0
+dst32 add d 8 and a 4294967295
+dst32 add d 12 shr a 32
+rtlbar
+f = ulong 0
+if eq i sub RXN 1
+f = DEOR
+end
+dst32 d or or DOWN f RXBUF
+end
+
+note Identify, stop, reset and bring up the chip: exit OOB, reset, PHY power up, MAC address, rings, TX and RX enabled, interrupts masked.
+note dma is the bus address the chip sees for rdma (4096-aligned, dma + MEMSIZE must not wrap). Returns 0 or an error code.
+fn rtlinit dma ulong to ulong
+for i ulong 32
+put rs i 0
+end
+if ne and dma 4095 0
+ret E_MEM
+end
+if lt add dma MEMSIZE dma
+ret E_MEM
+end
+put rs S_DMA dma
+for i ulong MEMSIZE
+put rdma i 0
+end
+tcr = rtlr32 TCR
+put rs S_TCRID tcr
+if eq tcr 4294967295
+ret E_ABSENT
+end
+if ne and tcr TCRIDM TCRID
+ret E_CHIP
+end
+ic = and tcr TCRICM
+if eq ic 0
+put rs S_MCFG 1
+else
+put rs S_MCFG 2
+end
+if and ne ic 0 ne ic 1048576
+put rs S_ICUNK 1
+end
+e = rtlexoob
+if ne e 0
+ret e
+end
+rtlpwrup
+e = rtlhwrst
+if ne e 0
+ret e
+end
+rtlrdmac
+for i ulong TXN
+f = ulong 0
+if eq i sub TXN 1
+f = DEOR
+end
+dst32 mul i 32 f
+end
+for i ulong RXN
+rtlrxpost i
+end
+rtlbar
+v = rtlr8 CFG9346
+rtlw8 CFG9346 or v UNLOCK
+tx = add dma OFFTXD
+rx = add dma OFFRXD
+rtlw32 TNPDSLO and tx 4294967295
+rtlw32 TNPDSHI shr tx 32
+rtlw32 RDSARLO and rx 4294967295
+rtlw32 RDSARHI shr rx 32
+rtlw32 TCR TCRVAL
+rtlw32 RSSCTRL 0
+v = rtlr16 QNUMCTL
+rtlw16 QNUMCTL and v not ulong 28
+v = rtlocrd OCPFMT
+rtlocwr OCPFMT or and v not ulong 3 1
+v = rtlr8 TXNOCLO
+rtlw8 TXNOCLO or v 4
+v = rtlr8 RXDTYPE
+rtlw8 RXDTYPE and v not ulong 2
+rtlw16 RMS or RMSVAL RMSVLAN
+v = rtlr8 RXDVGATE
+rtlw8 RXDVGATE and v not ulong 8
+rtlw32 RCR or or RCRCHIP RCRBCST RCRMYPH
+v = rtlr8 CFG9346
+rtlw8 CFG9346 and v not UNLOCK
+v = rtlr32 HWCLO0
+put rs S_CLOB and v CLOMASK
+rtlw8 CHIPCMD or CMDTXEN CMDRXEN
+put rs S_READY 1
+ret 0
+end
+
+note PHYstatus (r8127_n.c:4537-4547): 1 when the link is up. rs[S_MBPS] gets 10000/5000/2500/1000/100/10, or 0 when down or unknown.
+fn rtllink to ulong
+put rs S_MBPS 0
+s = rtlr16 PHYSTAT
+if eq s 65535
+ret 0
+end
+if eq and s PHYSLNK 0
+ret 0
+end
+m = ulong 0
+if ne and s 16384 0
+m = 10000
+else
+if ne and s 4096 0
+m = 5000
+else
+if ne and s 1024 0
+m = 2500
+else
+if ne and s 16 0
+m = 1000
+else
+if ne and s 8 0
+m = 100
+else
+if ne and s 4 0
+m = 10
+end
+end
+end
+end
+end
+end
+put rs S_MBPS m
+ret 1
+end
+
+fn rtlusable to ulong
+if ne get rs S_BROKE 0
+ret E_BROKEN
+end
+if eq get rs S_READY 0
+ret E_NOTRDY
+end
+ret 0
+end
+
+fn rtltxpend to ulong
+ret and sub get rs S_TXCUR get rs S_TXDIR 4294967295
+end
+
+note Send fbuf[0..n): 14..1514 bytes, no FCS, padded to 60. One descriptor, then the tail pointer (r8127_n.c:16427-16560 and the no-close doorbell 16412-16419).
+fn rtltx n ulong to ulong
+e = rtlusable
+if ne e 0
+ret e
+end
+if lt n 14
+ret E_ARG
+end
+if gt n FMAX
+ret E_ARG
+end
+if ge rtltxpend TXN
+ret E_FULL
+end
+cur = get rs S_TXCUR
+i = rem cur TXN
+sz = n
+if lt n FMIN
+sz = FMIN
+end
+b = add OFFTXB mul i STRIDE
+for k ulong sz
+if lt k n
+put rdma add b k get fbuf k
+else
+put rdma add b k 0
+end
+end
+a = add add get rs S_DMA OFFTXB mul i STRIDE
+d = mul i 32
+dst32 add d 4 0
+dst32 add d 8 and a 4294967295
+dst32 add d 12 shr a 32
+rtlbar
+f = ulong 0
+if eq i sub TXN 1
+f = DEOR
+end
+dst32 d or or or DOWN DFS DLS or f sz
+cur = and add cur 1 4294967295
+put rs S_TXCUR cur
+rtlw32 SWTAIL0 and add get rs S_CLOB cur CLOMASK
+ret 0
+end
+
+note TX completions: the close pointer's advance (r8127_n.c:16590-16620). rs[S_RECL] gets the count. A pointer that runs ahead of what was posted marks the device broken.
+fn rtltxrec to ulong
+put rs S_RECL 0
+e = rtlusable
+if ne e 0
+ret e
+end
+clo = rtlr32 HWCLO0
+done = and sub sub clo get rs S_CLOB get rs S_TXDIR CLOMASK
+if eq clo 4294967295
+put rs S_BROKE 1
+ret E_DEVICE
+end
+if gt done rtltxpend
+put rs S_BROKE 1
+ret E_DEVICE
+end
+put rs S_TXDIR and add get rs S_TXDIR done 4294967295
+put rs S_RECL done
+ret 0
+end
+
+note Copy f bytes of RX buffer i to obuf and publish the length.
+fn rxcopy i ulong f ulong to void
+b = add OFFRXB mul i STRIDE
+for k ulong f
+put obuf k get rdma add b k
+end
+put rs S_RXLEN f
+end
+fn rxdrop to void
+put rs S_RXDRP add get rs S_RXDRP 1
+end
+
+note Handle one RX slot. 0: nothing pending (the chip still owns it). 1: a frame was delivered. 2: a frame was dropped (error, runt or
+note multi-descriptor; slot reposted). 3: the chip reported a length past the buffer, so the device is marked broken.
+fn rxone to ulong
+i = rem get rs S_RXCUR RXN
+s = dld32 add OFFRXD mul i 16
+if ne and s DOWN 0
+ret 0
+end
+rtlbar
+n = and s RXLEN
+if gt n RXBUF
+put rs S_BROKE 1
+ret 3
+end
+w = or DFS DLS
+good = and and eq and s w w eq and s RXRES 0 ge n 18
+r = ulong 2
+if good
+rxcopy i sub n 4
+r = 1
+else
+rxdrop
+end
+rtlrxpost i
+put rs S_RXCUR and add get rs S_RXCUR 1 4294967295
+ret r
+end
+
+note Take at most one received frame into obuf (FCS stripped); rs[S_RXLEN] is its length, 0 when none is pending. r8127_n.c:17036-17250.
+fn rtlrx to ulong
+put rs S_RXLEN 0
+e = rtlusable
+if ne e 0
+ret e
+end
+t = ulong 0
+while lt t RXN bound 16
+r = rxone
+if eq r 0
+ret 0
+end
+if eq r 3
+ret E_DEVICE
+end
+if eq r 1
+ret 0
+end
+t = add t 1
+end
+ret 0
+end
+
+note Stop DMA only on a chip rtlinit identified (E_NOTRDY otherwise, nothing written): mask interrupts, close the RX gate, stop request, wait for the FIFOs, soft reset.
+fn rtlstop to ulong
+if eq get rs S_MCFG 0
+ret E_NOTRDY
+end
+put rs S_READY 0
+ret rtlhwrst
+end
