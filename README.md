@@ -140,3 +140,16 @@ sh tests/install/run.sh                           # installer tests (needs docke
 ## Licence
 
 Apache-2.0. Register facts come from Realtek's `r8127` driver (see its own licence at github.com/openwrt/rtl8127); no Realtek code is copied here.
+
+## Human-Directed Agentic Engineering
+
+Development follows Human-Directed Agentic Engineering (HDAE): humans define goals,
+architecture, constraints, acceptance criteria, and stopping points; agents implement,
+execute checks, diagnose failures, and revise within those boundaries. Human review
+retains responsibility for claims, acceptance, and release decisions. This describes
+the development method, not a change to runtime autonomy or historical evidence.
+
+For the documented method and a systems-software case study, see Gregory M. Kurtzer
+(2026), *Ginux: Building an Independent Kernel That Runs Linux Userspace through
+Human-Directed Agentic Engineering*, technical report, v1, Zenodo,
+<https://doi.org/10.5281/zenodo.23682548>.
